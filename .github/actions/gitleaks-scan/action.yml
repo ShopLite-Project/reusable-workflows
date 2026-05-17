@@ -1,0 +1,39 @@
+name: Gitleaks Secret Scan
+description: Checkout code, run Gitleaks, and upload the SARIF report
+
+inputs:
+  scan_path:
+    description: Path to scan for secrets
+    required: false
+    default: .
+  fail_on_leak:
+    description: Fail workflow if secrets are found
+    required: false
+    default: "true"
+  github_token:
+    description: GitHub token for the Gitleaks action
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Run Gitleaks
+      uses: gitleaks/gitleaks-action@v2
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token != '' && inputs.github_token || github.token }}
+      with:
+        args: --path=${{ inputs.scan_path }}${{ inputs.fail_on_leak == 'false' && ' --exit-code=0' || '' }}
+
+    - name: Upload Gitleaks Report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: gitleaks-report
+        path: results.sarif
+        retention-days: 30

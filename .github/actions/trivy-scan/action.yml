@@ -1,0 +1,71 @@
+name: Trivy Vulnerability Scan
+description: Checkout code, run Trivy, and upload the SARIF report
+
+inputs:
+  scan_type:
+    description: Type of scan (fs, image, config)
+    required: false
+    default: fs
+  image_ref:
+    description: Image reference for image scan
+    required: false
+    default: ""
+  scan_path:
+    description: Path to scan for fs/config scan
+    required: false
+    default: .
+  severity:
+    description: Severities to check (CRITICAL,HIGH,MEDIUM,LOW)
+    required: false
+    default: CRITICAL,HIGH
+  exit_code:
+    description: Exit code when vulnerabilities are found
+    required: false
+    default: "1"
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Trivy (Filesystem)
+      if: inputs.scan_type == 'fs'
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: fs
+        scan-ref: ${{ inputs.scan_path }}
+        severity: ${{ inputs.severity }}
+        exit-code: ${{ inputs.exit_code }}
+        format: sarif
+        output: trivy-results.sarif
+
+    - name: Run Trivy (Image)
+      if: inputs.scan_type == 'image'
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: image
+        image-ref: ${{ inputs.image_ref }}
+        severity: ${{ inputs.severity }}
+        exit-code: ${{ inputs.exit_code }}
+        format: sarif
+        output: trivy-results.sarif
+
+    - name: Run Trivy (Config)
+      if: inputs.scan_type == 'config'
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: config
+        scan-ref: ${{ inputs.scan_path }}
+        severity: ${{ inputs.severity }}
+        exit-code: ${{ inputs.exit_code }}
+        format: sarif
+        output: trivy-results.sarif
+
+    - name: Upload Trivy Report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: trivy-report-${{ inputs.scan_type }}
+        path: trivy-results.sarif
+        retention-days: 30

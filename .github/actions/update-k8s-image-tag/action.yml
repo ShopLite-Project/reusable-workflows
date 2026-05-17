@@ -1,0 +1,138 @@
+name: Update k8s Image Tag
+description: Update an image reference in a Kubernetes manifest repository and push the change.
+
+inputs:
+  github_token:
+    description: Token with contents write access to the target repository
+    required: true
+  target_repository:
+    description: Target repository in owner/name format
+    required: true
+  target_branch:
+    description: Branch to update in the target repository
+    required: false
+    default: main
+  manifest_path:
+    description: Relative path to the file to update
+    required: true
+  image_repository:
+    description: Image repository to update, without the tag. Required for manifest image replacement mode.
+    required: false
+    default: ""
+  image_tag:
+    description: New image tag value
+    required: true
+  yaml_key_path:
+    description: Optional dot-delimited YAML key path to update, for example image.tag
+    required: false
+    default: ""
+  commit_user_name:
+    description: Git author name
+    required: false
+    default: github-actions[bot]
+  commit_user_email:
+    description: Git author email
+    required: false
+    default: 41898282+github-actions[bot]@users.noreply.github.com
+  commit_message:
+    description: Commit message for the update
+    required: false
+    default: chore: update kubernetes image tag
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout target repository
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.target_repository }}
+        ref: ${{ inputs.target_branch }}
+        token: ${{ inputs.github_token }}
+        path: target-repo
+
+    - name: Install YAML dependency
+      if: inputs.yaml_key_path != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 -m pip install --user PyYAML
+
+    - name: Update manifest image reference or YAML key
+      shell: bash
+      env:
+        FILE: target-repo/${{ inputs.manifest_path }}
+        IMAGE_REPOSITORY: ${{ inputs.image_repository }}
+        IMAGE_TAG: ${{ inputs.image_tag }}
+        YAML_KEY_PATH: ${{ inputs.yaml_key_path }}
+      run: |
+        set -euo pipefail
+        if [ ! -f "$FILE" ]; then
+          echo "Manifest file not found: $FILE" >&2
+          exit 1
+        fi
+
+        python3 - <<'PY'
+        from pathlib import Path
+        import os
+        import re
+        import sys
+
+        file_path = Path(os.environ["FILE"])
+        image_repository = os.environ["IMAGE_REPOSITORY"]
+        image_tag = os.environ["IMAGE_TAG"]
+        yaml_key_path = os.environ["YAML_KEY_PATH"]
+
+        content = file_path.read_text()
+
+        if yaml_key_path:
+          try:
+            import yaml
+          except ImportError as exc:
+            raise SystemExit(f"PyYAML is required for yaml_key_path mode: {exc}")
+
+          data = yaml.safe_load(content)
+          if data is None:
+            raise SystemExit(f"YAML file is empty: {file_path}")
+
+          current = data
+          keys = yaml_key_path.split(".")
+          for key in keys[:-1]:
+            if not isinstance(current, dict) or key not in current:
+              raise SystemExit(f"Key path '{yaml_key_path}' not found in {file_path}")
+            current = current[key]
+
+          final_key = keys[-1]
+          if not isinstance(current, dict) or final_key not in current:
+            raise SystemExit(f"Key path '{yaml_key_path}' not found in {file_path}")
+
+          current[final_key] = image_tag
+          updated = yaml.safe_dump(data, sort_keys=False)
+        else:
+          if not image_repository:
+            raise SystemExit("image_repository is required when yaml_key_path is not provided")
+
+          pattern = re.compile(rf"({re.escape(image_repository)}:)([A-Za-z0-9._-]+)")
+          updated, count = pattern.subn(rf"\1{image_tag}", content, count=1)
+
+          if count == 0:
+            raise SystemExit(f"Image repository '{image_repository}' not found in {file_path}")
+
+        file_path.write_text(updated)
+        PY
+
+    - name: Commit and push manifest update
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd target-repo
+        git config user.name "${{ inputs.commit_user_name }}"
+        git config user.email "${{ inputs.commit_user_email }}"
+        git add "${{ inputs.manifest_path }}"
+
+        if git diff --cached --quiet; then
+          echo "No manifest changes detected."
+          exit 0
+        fi
+
+        git commit -m "${{ inputs.commit_message }}"
+        git push origin "${{ inputs.target_branch }}"

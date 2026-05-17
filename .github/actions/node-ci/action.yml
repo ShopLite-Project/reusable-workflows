@@ -1,0 +1,51 @@
+name: Node CI
+description: Install dependencies, run tests, optionally build, and upload coverage.
+
+inputs:
+  node_version:
+    description: Node.js version
+    required: false
+    default: "20"
+  install_command:
+    description: Command used to install dependencies
+    required: false
+    default: npm ci
+  test_command:
+    description: Command used to run tests
+    required: false
+    default: npm test
+  build_command:
+    description: Optional build command
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node_version }}
+        cache: npm
+
+    - name: Install dependencies
+      shell: bash
+      run: ${{ inputs.install_command }}
+
+    - name: Run tests
+      shell: bash
+      run: ${{ inputs.test_command }}
+
+    - name: Run build
+      if: inputs.build_command != ''
+      shell: bash
+      run: ${{ inputs.build_command }}
+
+    - name: Upload coverage artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: coverage
+        retention-days: 14
+        if-no-files-found: ignore

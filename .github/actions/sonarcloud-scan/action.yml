@@ -1,0 +1,57 @@
+name: SonarCloud Analysis
+description: Checkout code and run a SonarCloud scan
+
+inputs:
+  project_key:
+    description: SonarCloud project key
+    required: true
+  organization:
+    description: SonarCloud organization
+    required: true
+  sources:
+    description: Source directory
+    required: false
+    default: .
+  exclusions:
+    description: Files to exclude from analysis
+    required: false
+    default: '**/node_modules/**,**/*.test.*,**/tests/**'
+  sonar_token:
+    description: SonarCloud token
+    required: true
+  github_token:
+    description: GitHub token for SonarCloud integration
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: SonarCloud Scan
+      uses: SonarSource/sonarcloud-github-action@master
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token != '' && inputs.github_token || github.token }}
+        SONAR_TOKEN: ${{ inputs.sonar_token }}
+      with:
+        args: >
+          -Dsonar.projectKey=${{ inputs.project_key }}
+          -Dsonar.organization=${{ inputs.organization }}
+          -Dsonar.sources=${{ inputs.sources }}
+          -Dsonar.exclusions=${{ inputs.exclusions }}
+          -Dsonar.python.coverage.reportPaths=coverage.xml
+          -Dsonar.qualitygate.wait=true
+
+    - name: Quality Gate Result
+      if: always()
+      shell: bash
+      run: |
+        {
+          echo "### SonarCloud Quality Gate"
+          echo "Project: ${{ inputs.project_key }}"
+          echo "[View in SonarCloud](https://sonarcloud.io/project/overview?id=${{ inputs.project_key }})"
+        } >> "$GITHUB_STEP_SUMMARY"
