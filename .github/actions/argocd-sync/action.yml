@@ -1,0 +1,159 @@
+name: "ArgoCD Sync"
+description: "Use kubeconfig from GitHub Secrets, login to ArgoCD, sync app, wait for health, and show pods"
+
+inputs:
+  argocd-server:
+    description: "ArgoCD server"
+    required: true
+  project-name:
+    description: "Project name"
+    required: true
+  application-name:
+    description: "Application name"
+    required: true
+  environment:
+    description: "Environment, used for app name and Vault URL"
+    required: true
+  namespace:
+    description: "Kubernetes namespace"
+    required: true
+  kubeconfig:
+    description: "Raw kubeconfig content from GitHub Secrets"
+    required: true
+  argocd-username:
+    description: "ArgoCD username"
+    required: true
+  argocd-password:
+    description: "ArgoCD password"
+    required: true
+  force-sync:
+    description: "Force sync true/false"
+    required: false
+    default: "true"
+
+outputs:
+  app-name:
+    description: "ArgoCD app name"
+    value: ${{ steps.meta.outputs.app_name }}
+
+runs:
+  using: "composite"
+  steps:
+  - name: Preflight
+    shell: bash
+    run: |
+      echo "argocd-server = ${{ inputs.argocd-server }}"
+      echo "project-name  = ${{ inputs.project-name }}"
+      echo "application   = ${{ inputs.application-name }}"
+      echo "environment   = ${{ inputs.environment }}"
+      echo "namespace     = ${{ inputs.namespace }}"
+      echo "kubeconfig    = provided via GitHub Secrets"
+
+  - name: Install kubectl
+    shell: bash
+    run: |
+      set -euo pipefail
+      curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+      chmod +x kubectl
+      mv kubectl /usr/local/bin/kubectl
+      kubectl version --client
+
+  - name: Install ArgoCD CLI
+    shell: bash
+    run: |
+      set -euo pipefail
+      VERSION=$(curl -L -s https://raw.githubusercontent.com/argoproj/argo-cd/stable/VERSION)
+      curl -sSL -o argocd-linux-amd64 "https://github.com/argoproj/argo-cd/releases/download/v${VERSION}/argocd-linux-amd64"
+      chmod +x argocd-linux-amd64
+      mv argocd-linux-amd64 /usr/local/bin/argocd
+      argocd version --client
+
+  - name: Write kubeconfig
+    shell: bash
+    env:
+      KUBECONFIG_CONTENT: ${{ inputs.kubeconfig }}
+    run: |
+      set -euo pipefail
+
+      mkdir -p ~/.kube
+
+      printf '%s' "${KUBECONFIG_CONTENT}" > ~/.kube/config
+
+      chmod 600 ~/.kube/config
+
+      kubectl get ns
+
+  - name: Login to ArgoCD
+    shell: bash
+    run: |
+      set -euo pipefail
+      argocd login "${{ inputs.argocd-server }}" \
+        --username "${{ inputs.argocd-username }}" \
+        --password "${{ inputs.argocd-password }}" \
+        --grpc-web
+
+  - name: Build app name
+    id: meta
+    shell: bash
+    run: |
+      set -euo pipefail
+      APP="${{ inputs.project-name }}-${{ inputs.application-name }}-${{ inputs.environment }}"
+      echo "app_name=$APP" >> "$GITHUB_OUTPUT"
+
+  - name: Sync app
+    shell: bash
+    run: |
+      set -euo pipefail
+
+      APP="${{ steps.meta.outputs.app_name }}"
+      FORCE_SYNC="${{ inputs.force-sync }}"
+
+      echo "Checking ArgoCD app operation status for: $APP"
+
+      if argocd app get "$APP" --grpc-web | grep -q "Operation:"; then
+        echo "Another ArgoCD operation is already running for $APP"
+        echo "Terminating existing operation..."
+        argocd app terminate-op "$APP" --grpc-web || true
+        sleep 15
+      fi
+
+      for attempt in 1 2 3; do
+        echo "ArgoCD sync attempt $attempt for $APP"
+
+        if [ "$FORCE_SYNC" = "true" ]; then
+          if argocd app sync "$APP" --force --grpc-web; then
+            echo "ArgoCD sync succeeded"
+            exit 0
+          fi
+        else
+          if argocd app sync "$APP" --grpc-web; then
+            echo "ArgoCD sync succeeded"
+            exit 0
+          fi
+        fi
+
+        echo "Sync attempt $attempt failed."
+
+        echo "Checking for stuck ArgoCD operation..."
+        argocd app terminate-op "$APP" --grpc-web || true
+
+        sleep 20
+      done
+
+      echo "ArgoCD sync failed after 3 attempts"
+      exit 1
+
+  - name: Wait for app
+    shell: bash
+    run: |
+      set -euo pipefail
+      APP="${{ steps.meta.outputs.app_name }}"
+
+      echo "Waiting for $APP to become synced, healthy, and operation-complete..."
+      argocd app wait "$APP" --health --sync --operation --grpc-web --timeout 600
+
+  - name: Show pods
+    shell: bash
+    run: |
+      set -euo pipefail
+      kubectl get pods -n "${{ inputs.namespace }}"

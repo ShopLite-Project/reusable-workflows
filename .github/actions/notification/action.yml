@@ -1,0 +1,120 @@
+name: "Slack Notification"
+description: "Send notification using Slack bot token"
+
+inputs:
+  slack_url:
+    description: "Base URL for Slack API"
+    required: false
+    default: "https://slack.com"
+  bot_token:
+    description: "Slack Bot Token"
+    required: true
+  channel_id:
+    description: "Channel ID to post message"
+    required: true
+  message:
+    description: "Markdown message"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+  - name: Send Slack notification via Bot
+    shell: bash
+    env:
+      INPUT_SLACK_URL: ${{ inputs.slack_url }}
+      INPUT_BOT_TOKEN: ${{ inputs.bot_token }}
+      INPUT_CHANNEL_ID: ${{ inputs.channel_id }}
+      INPUT_MESSAGE: ${{ inputs.message }}
+    run: |
+      set -euo pipefail
+      python3 <<'PY'
+      import json
+      import os
+      import socket
+      import time
+      import urllib.error
+      import urllib.parse
+      import urllib.request
+
+      REQUIRED_ENV_VARS = (
+          "INPUT_SLACK_URL",
+          "INPUT_BOT_TOKEN",
+          "INPUT_CHANNEL_ID",
+          "INPUT_MESSAGE",
+      )
+
+      missing = [name for name in REQUIRED_ENV_VARS if not os.getenv(name)]
+      if missing:
+          raise SystemExit(f"Missing required environment variables: {', '.join(missing)}")
+
+      raw_base_url = os.environ["INPUT_SLACK_URL"].strip()
+      parsed_base_url = urllib.parse.urlparse(raw_base_url)
+
+      if parsed_base_url.scheme not in {"http", "https"} or not parsed_base_url.netloc:
+          raise SystemExit(
+              "INPUT_SLACK_URL must be an absolute http(s) URL such as "
+              "https://slack.com"
+          )
+
+      base_url = raw_base_url.rstrip("/")
+      endpoint = f"{base_url}/api/chat.postMessage"
+
+      payload = json.dumps(
+          {
+              "channel": os.environ["INPUT_CHANNEL_ID"],
+              "text": os.environ["INPUT_MESSAGE"],
+              "mrkdwn": True,
+          }
+      ).encode("utf-8")
+
+      headers = {
+          "Authorization": f"Bearer {os.environ['INPUT_BOT_TOKEN']}",
+          "Content-Type": "application/json; charset=utf-8",
+      }
+
+      retryable_http_statuses = {429, 500, 502, 503, 504}
+      transport_errors = (urllib.error.URLError, TimeoutError, socket.timeout)
+      max_attempts = 3
+      timeout_seconds = 15
+
+      for attempt in range(1, max_attempts + 1):
+          request = urllib.request.Request(
+              endpoint,
+              data=payload,
+              headers=headers,
+              method="POST",
+          )
+
+          try:
+              with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                  status_code = response.getcode()
+                  response_body = response.read().decode("utf-8", errors="replace")
+          except urllib.error.HTTPError as exc:
+              response_body = exc.read().decode("utf-8", errors="replace")
+              if exc.code in retryable_http_statuses and attempt < max_attempts:
+                  time.sleep(attempt)
+                  continue
+              raise SystemExit(f"Slack API request failed with HTTP {exc.code}: {response_body}") from exc
+          except transport_errors as exc:
+              if attempt < max_attempts:
+                  time.sleep(attempt)
+                  continue
+              raise SystemExit(f"Slack API request failed after retries: {exc}") from exc
+
+          parsed_response = json.loads(response_body) if response_body.strip() else {}
+          if status_code < 200 or status_code >= 300:
+              if attempt < max_attempts and status_code in retryable_http_statuses:
+                  time.sleep(attempt)
+                  continue
+              raise SystemExit(f"Slack API request failed with HTTP {status_code}: {response_body}")
+
+          if not parsed_response.get("ok", False):
+              error_message = parsed_response.get("error", "unknown_error")
+              raise SystemExit(f"Slack API returned ok=false: {error_message}")
+
+          print(f"Slack bot message sent (HTTP {status_code})")
+          if response_body.strip():
+              print(response_body)
+          break
+      PY

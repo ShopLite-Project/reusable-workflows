@@ -33,8 +33,10 @@ See [.github/actions/README.md](./.github/actions/README.md).
 
 Current actions:
 
+- `argocd-sync`
 - `gitleaks`
 - `node-ci`
+- `notification`
 - `checkov`
 - `trivy`
 - `docker-build-push`
