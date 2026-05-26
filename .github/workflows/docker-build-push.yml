@@ -1,0 +1,65 @@
+name: Reusable Docker Build and Push
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        required: false
+        type: string
+        default: ubuntu-latest
+      image_name:
+        required: true
+        type: string
+      dockerfile:
+        required: false
+        type: string
+        default: Dockerfile
+      context:
+        required: false
+        type: string
+        default: .
+      push:
+        required: false
+        type: boolean
+        default: false
+      tags:
+        required: true
+        type: string
+      registry:
+        required: false
+        type: string
+        default: ghcr.io
+      username:
+        required: false
+        type: string
+        default: ""
+      build_args:
+        required: false
+        type: string
+        default: ""
+    secrets:
+      registry_password:
+        required: true
+
+jobs:
+  docker-build-push:
+    runs-on: ${{ inputs.runs_on }}
+    outputs:
+      primary_tag: ${{ steps.docker.outputs.primary_tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build shared Docker image
+        id: docker
+        uses: ./.github/actions/docker-build-push
+        with:
+          image_name: ${{ inputs.image_name }}
+          dockerfile: ${{ inputs.dockerfile }}
+          context: ${{ inputs.context }}
+          push: ${{ inputs.push }}
+          tags: ${{ inputs.tags }}
+          registry: ${{ inputs.registry }}
+          username: ${{ inputs.username }}
+          password: ${{ secrets.registry_password }}
+          build_args: ${{ inputs.build_args }}
